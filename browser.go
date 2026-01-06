@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -26,6 +27,12 @@ func setupBrowserTab() fyne.CanvasObject {
 			return setupApiKeyPrompt()
 		} else {
 			apiClient = NewApiClient(settings.ApiKey)
+			// Verify API key works by making a simple request
+			_, err := apiClient.GetGames(0, 1)
+			if err != nil {
+				fmt.Printf("API key validation failed: %v\n", err)
+				return setupApiKeyPrompt()
+			}
 		}
 	}
 
@@ -85,13 +92,26 @@ func setupApiKeyPrompt() fyne.CanvasObject {
 		},
 		SubmitText: "Save",
 		OnSubmit: func() {
+			if keyEntry.Text == "" {
+				dialog.ShowError(fmt.Errorf("API key cannot be empty"), fyne.CurrentApp().Driver().AllWindows()[0])
+				return
+			}
+			
+			// Create a temporary client to validate the API key
+			tempClient := NewApiClient(keyEntry.Text)
+			_, err := tempClient.GetGames(0, 1)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("Invalid API key: %v", err), fyne.CurrentApp().Driver().AllWindows()[0])
+				return
+			}
+			
 			settings, _ := LoadSettings()
 			settings.ApiKey = keyEntry.Text
 			SaveSettings(settings)
 			
 			updateEnvApiKey(keyEntry.Text)
 			
-			apiClient = NewApiClient(settings.ApiKey)
+			apiClient = tempClient
 			
 			tabs := fyne.CurrentApp().Driver().AllWindows()[0].Content().(*container.AppTabs)
 			browserTab := container.NewTabItem("Browse", setupBrowserTab())
@@ -383,28 +403,25 @@ func downloadFile(mod Mod, file File) {
 	progress.Show()
 	
 	go func() {
-
-
 		downloadURL := file.DownloadURL
 		
 		if downloadURL == "" {
 			urlResp, err := apiClient.GetModFileDownloadURL(mod.ID, file.ID)
-			if err != nil {
-			} else {
+			if err == nil && urlResp.Data != "" {
 				downloadURL = urlResp.Data
+				fmt.Printf("Got a fucking download URL: %s\n", downloadURL)
 			}
 		}
 		
 		if downloadURL == "" {
-			
 			fingerprints := []uint{}
 			
 			if file.FileFingerprint > 0 {
 				fingerprints = append(fingerprints, uint(file.FileFingerprint))
 			} else {
-				for _, module := range file.Modules {
-					if module.Fingerprint > 0 {
-						fingerprints = append(fingerprints, uint(module.Fingerprint))
+				for i := range file.Modules {
+					if file.Modules[i].Fingerprint > 0 {
+						fingerprints = append(fingerprints, uint(file.Modules[i].Fingerprint))
 					}
 				}
 			}
@@ -417,24 +434,36 @@ func downloadFile(mod Mod, file File) {
 			
 			fingerprintResp, err := apiClient.MatchFingerprints(fingerprints)
 			if err == nil {
+				fmt.Printf("Found matches: Exact=%d, Partial=%d\n", 
 					len(fingerprintResp.Data.ExactMatches), len(fingerprintResp.Data.PartialMatches))
 				
-				for _, match := range fingerprintResp.Data.ExactMatches {
-					if match.File.DownloadURL != "" {
-						downloadURL = match.File.DownloadURL
+				for i := range fingerprintResp.Data.ExactMatches {
+					if fingerprintResp.Data.ExactMatches[i].File.DownloadURL != "" {
+						downloadURL = fingerprintResp.Data.ExactMatches[i].File.DownloadURL
 						break
 					}
 				}
 				
 				if downloadURL == "" && len(fingerprintResp.Data.PartialMatches) > 0 {
-					for _, match := range fingerprintResp.Data.PartialMatches {
-						if match.File.DownloadURL != "" {
-							downloadURL = match.File.DownloadURL
+					for i := range fingerprintResp.Data.PartialMatches {
+						if fingerprintResp.Data.PartialMatches[i].File.DownloadURL != "" {
+							downloadURL = fingerprintResp.Data.PartialMatches[i].File.DownloadURL
 							break
 						}
 					}
 				}
 			}
+		}
+		
+		if downloadURL == "" {
+			fmt.Printf("Fuck, no download URL. Let's try to make one...\n")
+			fileID := file.ID
+			thousands := fileID / 1000
+			remainder := fileID % 1000
+			
+			downloadURL = fmt.Sprintf("https://mediafilez.forgecdn.net/files/%d/%d/%s", 
+				thousands, remainder, file.FileName)
+			fmt.Printf("Made a URL: %s\n", downloadURL)
 		}
 		
 		if downloadURL == "" {
@@ -444,19 +473,19 @@ func downloadFile(mod Mod, file File) {
 			if mod.Links.WebsiteURL != "" {
 				websiteURL = mod.Links.WebsiteURL
 			} else {
-				websiteURL = fmt.Sprintf("https://www.curseforge.com/sims4/mods/%s", mod.Slug)
+				websiteURL = fmt.Sprintf("https://www.curseforge.com/sims4/mods/%s/files/%d", mod.Slug, file.ID)
 			}
 			
 			confirmDialog := dialog.NewConfirm(
-				"Direct Download Not Available",
-				fmt.Sprintf("I have yet to actually get downloads implemented, this is just a bit of placeholder code for now, it doesn't open your browser", mod.Name, file.FileName),
+				"Shit! Can't Download",
+				fmt.Sprintf("I can't download '%s' directly. Wanna go to the website and do it yourself?", file.FileName),
 				func(ok bool) {
 					if ok {
 						fmt.Printf("Would open browser to: %s\n", websiteURL)
 						
 						dialog.ShowInformation(
-							"Manual Download Instructions",
-							fmt.Sprintf("Please download the mod manually and save it to:\n%s", settings.ModsDirectory),
+							"Manual Download",
+							fmt.Sprintf("Download it and put it here:\n%s", settings.ModsDirectory),
 							fyne.CurrentApp().Driver().AllWindows()[0],
 						)
 					}
@@ -476,22 +505,43 @@ func downloadFile(mod Mod, file File) {
 			return
 		}
 		
-\		resp, err := http.Get(downloadURL)
+		client := &http.Client{
+			Timeout: 60 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return fmt.Errorf("too many redirects, what the fuck")
+				}
+				return nil
+			},
+		}
+
+		req, err := http.NewRequest("GET", downloadURL, nil) // let's try to download this shit
+		if err != nil {
+			progress.Hide()
+			dialog.ShowError(fmt.Errorf("download request failed: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
+			return
+		}
+
+		req.Header.Add("User-Agent", "Sims4ModManager/1.0") // fake being a real browser
+		req.Header.Add("Accept", "*/*") // take any content type, we're desperate
+
+		// Execute the request
+		resp, err := client.Do(req)
 		if err != nil {
 			progress.Hide()
 			dialog.ShowError(fmt.Errorf("download failed: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
 			return
 		}
-		if resp == nil {
+		if resp == nil || resp.StatusCode != http.StatusOK {
 			progress.Hide()
-			dialog.ShowError(fmt.Errorf("download failed: empty response"), fyne.CurrentApp().Driver().AllWindows()[0])
+			dialog.ShowError(fmt.Errorf("download failed: server returned status %d", resp.StatusCode), fyne.CurrentApp().Driver().AllWindows()[0])
 			return
 		}
 		defer resp.Body.Close()
 		
 		targetPath := filepath.Join(settings.ModsDirectory, file.FileName)
 		
-\		if _, err := os.Stat(targetPath); err == nil {
+		if _, err := os.Stat(targetPath); err == nil {
 			progress.Hide()
 			confirmDialog := dialog.NewConfirm(
 				"File Already Exists",
@@ -513,15 +563,15 @@ func downloadFile(mod Mod, file File) {
 }
 
 func downloadToFile(resp *http.Response, targetPath string, fileSize int64, progress *dialog.ProgressDialog) {
-\	out, err := os.Create(targetPath)
+	out, err := os.Create(targetPath)
 	if err != nil {
 		progress.Hide()
-		dialog.ShowError(fmt.Errorf("failed to create file: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
+		dialog.ShowError(fmt.Errorf("can't create the damn file: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
 		return
 	}
 	defer out.Close()
 	
-\	buffer := make([]byte, 4096)
+	buffer := make([]byte, 4096)
 	var downloaded int64
 	
 	for {
@@ -530,16 +580,16 @@ func downloadToFile(resp *http.Response, targetPath string, fileSize int64, prog
 			_, writeErr := out.Write(buffer[:n])
 			if writeErr != nil {
 				progress.Hide()
-				dialog.ShowError(fmt.Errorf("failed to write to file: %w", writeErr), fyne.CurrentApp().Driver().AllWindows()[0])
+				dialog.ShowError(fmt.Errorf("fuck, can't write to file: %w", writeErr), fyne.CurrentApp().Driver().AllWindows()[0])
 				return
 			}
 			
 			downloaded += int64(n)
 			if fileSize > 0 {
 				progress.SetValue(float64(downloaded) / float64(fileSize))
-\			} else {
-\				progress.SetValue(0.5)
-\			}
+			} else {
+				progress.SetValue(0.5) // who the hell knows how big this file is
+			}
 		}
 		
 		if err != nil {
@@ -547,7 +597,7 @@ func downloadToFile(resp *http.Response, targetPath string, fileSize int64, prog
 				break
 			}
 			progress.Hide()
-			dialog.ShowError(fmt.Errorf("download error: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
+			dialog.ShowError(fmt.Errorf("shit broke during download: %w", err), fyne.CurrentApp().Driver().AllWindows()[0])
 			return
 		}
 	}
@@ -555,8 +605,8 @@ func downloadToFile(resp *http.Response, targetPath string, fileSize int64, prog
 	progress.Hide()
 	
 	successDialog := dialog.NewInformation(
-		"Download Complete",
-		"The mod has been successfully installed.",
+		"Got it!",
+		"Mod installed. Enjoy your game!",
 		fyne.CurrentApp().Driver().AllWindows()[0],
 	)
 	successDialog.Show()

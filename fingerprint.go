@@ -9,28 +9,10 @@ import (
 	"path/filepath"
 
 	"github.com/spaolacci/murmur3"
-
 )
 
-type FingerprintMatch struct {
-	ID         int   `json:"id"`
-	File       File  `json:"file"`
-	LatestFiles []File `json:"latestFiles"`
-}
 
-type FingerprintMatchesResponse struct {
-	Data struct {
-		IsCacheBuilt            bool               `json:"isCacheBuilt"`
-		ExactMatches            []FingerprintMatch `json:"exactMatches"`
-		ExactFingerprints       []uint             `json:"exactFingerprints"`
-		PartialMatches          []FingerprintMatch `json:"partialMatches"`
-		PartialMatchFingerprints map[string][]uint  `json:"partialMatchFingerprints"`
-		InstalledFingerprints   []uint             `json:"installedFingerprints"`
-		UnmatchedFingerprints   []uint             `json:"unmatchedFingerprints"`
-	} `json:"data"`
-}
-
-func CalculateFingerprint(path string) (uint, error) {
+func CalculateFingerprint(path string) (uint, error) { // this murmur3 shit better work
 	file, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -47,7 +29,8 @@ func CalculateFingerprint(path string) (uint, error) {
 	return uint(binary.LittleEndian.Uint64(s)), nil
 }
 
-func CalculateFingerprintsForDir(dir string) ([]uint, error) {
+
+func CalculateFingerprintsForDir(dir string) ([]uint, error) { // fuck me this is gonna be slow
 	var fingerprints []uint
 	
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -75,10 +58,51 @@ func CalculateFingerprintsForDir(dir string) ([]uint, error) {
 	return fingerprints, nil
 }
 
-func (c *ApiClient) MatchFingerprints(fingerprints []uint) (FingerprintMatchesResponse, error) {
-	var result FingerprintMatchesResponse
+
+func CalculateFuzzyFingerprintsForDir(dir string) ([]FolderFingerprint, error) { // why the fuck do we need fuzzy matching
+	folders := make(map[string][]uint)
+	
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		ext := filepath.Ext(path)
+		if !info.IsDir() && (ext == ".package" || ext == ".ts4script") {
+			folderName := filepath.Base(filepath.Dir(path))
+			
+			fp, err := CalculateFingerprint(path)
+			if err != nil {
+				return fmt.Errorf("error calculating fingerprint for %s: %v", path, err)
+			}
+			
+			folders[folderName] = append(folders[folderName], fp)
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	var result []FolderFingerprint
+	for folder, prints := range folders {
+		result = append(result, FolderFingerprint{
+			Foldername:   folder,
+			Fingerprints: prints,
+		})
+	}
+	
+	return result, nil
+}
+
+
+func (c *ApiClient) MatchFuzzyFingerprints(fingerprints []FolderFingerprint) (FingerprintFuzzyMatchesResponse, error) { // this API is so damn inconsistent
+	var result FingerprintFuzzyMatchesResponse
 	
 	requestBody := map[string]interface{}{
+		"gameId":       sims4GameID,
 		"fingerprints": fingerprints,
 	}
 	
@@ -87,7 +111,7 @@ func (c *ApiClient) MatchFingerprints(fingerprints []uint) (FingerprintMatchesRe
 		return result, err
 	}
 	
-	endpoint := fmt.Sprintf("/v1/fingerprints/78062")
+	endpoint := fmt.Sprintf("/v1/fingerprints/fuzzy/%d", sims4GameID)
 	
 	responseBody, err := c.makeRequest("POST", endpoint, jsonBody)
 	if err != nil {

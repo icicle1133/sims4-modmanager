@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	baseURL   = "https://api.curseforge.com"
+	baseURL     = "https://api.curseforge.com"
 	sims4GameID = 78062
 )
 
@@ -40,7 +40,7 @@ func (c *ApiClient) makeRequest(method, endpoint string, body []byte) ([]byte, e
 	
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err) // fuck this error handling
 	}
 	
 	req.Header.Set("Accept", "application/json")
@@ -61,20 +61,20 @@ func (c *ApiClient) makeRequest(method, endpoint string, body []byte) ([]byte, e
 	
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err) // shit, network error
 	}
 	defer resp.Body.Close()
 	
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err) // can't even read the body wtf
 	}
 	
 	fmt.Printf("Response status: %d %s\n", resp.StatusCode, resp.Status)
 	
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("Error response body: %s\n", string(responseBody))
-		return nil, fmt.Errorf("API request failed with status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("API request failed with status code: %d", resp.StatusCode) // fucking API errors
 	}
 	
 	previewLen := 100
@@ -96,7 +96,7 @@ func (c *ApiClient) SearchMods(searchFilter string, page int) (SearchModsRespons
 	}
 	params.Add("pageSize", "20")
 	params.Add("index", strconv.Itoa((page-1)*20))
-	params.Add("sortField", "2") // 2 = Popularity
+	params.Add("sortField", "2") // 2 = Popularity, this API is so damn unintuitive
 	params.Add("sortOrder", "desc")
 	
 	endpoint := "/v1/mods/search?" + params.Encode()
@@ -172,7 +172,6 @@ func (c *ApiClient) GetModFiles(modId int) (GetModFilesResponse, error) {
 		return result, err
 	}
 	
-	
 	err = json.Unmarshal(responseBody, &result)
 	
 	for i, file := range result.Data {
@@ -197,3 +196,214 @@ func (c *ApiClient) GetModFileDownloadURL(modId, fileId int) (StringResponse, er
 	return result, err
 }
 
+func (c *ApiClient) GetModFileChangelog(modId, fileId int) (StringResponse, error) {
+	var result StringResponse
+	
+	endpoint := fmt.Sprintf("/v1/mods/%d/files/%d/changelog", modId, fileId)
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetGames(index, pageSize int) (GetGamesResponse, error) {
+	var result GetGamesResponse
+	
+	params := url.Values{}
+	if index > 0 {
+		params.Add("index", strconv.Itoa(index))
+	}
+	if pageSize > 0 && pageSize <= 50 {
+		params.Add("pageSize", strconv.Itoa(pageSize))
+	}
+	
+	endpoint := "/v1/games"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetGame(gameId int) (GetGameResponse, error) {
+	var result GetGameResponse
+	
+	endpoint := fmt.Sprintf("/v1/games/%d", gameId)
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetGameVersions(gameId int) (GetVersionsResponse, error) {
+	var result GetVersionsResponse
+	
+	endpoint := fmt.Sprintf("/v1/games/%d/versions", gameId)
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetGameVersionsV2(gameId int) (GetVersionsV2Response, error) {
+	var result GetVersionsV2Response
+	
+	endpoint := fmt.Sprintf("/v2/games/%d/versions", gameId)
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetGameVersionTypes(gameId int) (GetVersionTypesResponse, error) {
+	var result GetVersionTypesResponse
+	
+	endpoint := fmt.Sprintf("/v1/games/%d/version-types", gameId)
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetCategories(gameId int, classId int, classesOnly bool) (GetCategoriesResponse, error) {
+	var result GetCategoriesResponse
+	
+	params := url.Values{}
+	params.Add("gameId", strconv.Itoa(gameId))
+	
+	if classId > 0 {
+		params.Add("classId", strconv.Itoa(classId))
+	}
+	
+	if classesOnly {
+		params.Add("classesOnly", "true")
+	}
+	
+	endpoint := "/v1/categories?" + params.Encode()
+	
+	responseBody, err := c.makeRequest("GET", endpoint, nil)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) MatchFingerprints(fingerprints []uint) (FingerprintMatchesResponse, error) {
+	var result FingerprintMatchesResponse
+	
+	requestBody := map[string]interface{}{
+		"fingerprints": fingerprints,
+	}
+	
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return result, err
+	}
+	
+	endpoint := fmt.Sprintf("/v1/fingerprints/%d", sims4GameID)
+	
+	responseBody, err := c.makeRequest("POST", endpoint, jsonBody)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) MatchFingerprintsGeneric(fingerprints []uint) (FingerprintMatchesResponse, error) {
+	var result FingerprintMatchesResponse
+	
+	requestBody := map[string]interface{}{
+		"fingerprints": fingerprints,
+	}
+	
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return result, err
+	}
+	
+	endpoint := "/v1/fingerprints"
+	
+	responseBody, err := c.makeRequest("POST", endpoint, jsonBody)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetModsByIds(modIds []int) (GetModsResponse, error) {
+	var result GetModsResponse
+	
+	requestBody := map[string]interface{}{
+		"modIds": modIds,
+	}
+	
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return result, err
+	}
+	
+	endpoint := "/v1/mods"
+	
+	responseBody, err := c.makeRequest("POST", endpoint, jsonBody)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
+
+func (c *ApiClient) GetFilesByIds(fileIds []int) (GetFilesResponse, error) {
+	var result GetFilesResponse
+	
+	requestBody := map[string]interface{}{
+		"fileIds": fileIds,
+	}
+	
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return result, err
+	}
+	
+	endpoint := "/v1/mods/files"
+	
+	responseBody, err := c.makeRequest("POST", endpoint, jsonBody)
+	if err != nil {
+		return result, err
+	}
+	
+	err = json.Unmarshal(responseBody, &result)
+	return result, err
+}
